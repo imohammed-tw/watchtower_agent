@@ -1,5 +1,7 @@
+# File: app/agents/content_agent.py - FIXED VERSION
+
 """
-Content Agent - Handles data collection and validation
+Content Agent - Handles data collection and validation - FIXED
 """
 
 from typing import List, Any
@@ -13,7 +15,7 @@ from tools.content_processor import ContentProcessor
 
 
 class ContentAgent(BaseAgent):
-    """Content collection and validation agent"""
+    """Content collection and validation agent - FIXED"""
 
     def __init__(self):
         super().__init__("ContentAgent")
@@ -41,6 +43,14 @@ class ContentAgent(BaseAgent):
                 f"Starting content collection for user {workflow_state.user_id}"
             )
 
+            # 🔧 FIX: Ensure proper date range is set
+            config = workflow_state.newsletter_config
+            if not config.date_range:
+                config.date_range = self._calculate_date_range(config.format)
+                print(
+                    f"🔧 Setting date range for {config.format.value}: {config.date_range}"
+                )
+
             # 1. Generate personalized topics
             topics = await self._generate_topics(workflow_state)
             self.logger.info(f"Generated {len(topics)} search topics")
@@ -58,9 +68,15 @@ class ContentAgent(BaseAgent):
                 except Exception as e:
                     self.logger.error(f"Error collecting for topic '{topic}': {e}")
 
-            # 3. Remove duplicates and validate
+            # 3. 🔧 FIX: Filter articles by date range STRICTLY
+            date_filtered_articles = self._filter_by_date_range(all_articles, config)
+            print(
+                f"🔧 Date filtering: {len(all_articles)} -> {len(date_filtered_articles)} articles"
+            )
+
+            # 4. Remove duplicates and validate
             unique_articles = await self.content_processor.remove_duplicates(
-                all_articles
+                date_filtered_articles
             )
             validated_articles = await self.content_processor.validate_articles(
                 unique_articles, workflow_state.user_preferences
@@ -75,45 +91,107 @@ class ContentAgent(BaseAgent):
             self.logger.error(f"Content collection failed: {e}")
             raise
 
+    def _calculate_date_range(self, format_type: NewsletterFormat) -> dict:
+        """Calculate proper date range based on format"""
+        end_date = datetime.utcnow()
+
+        if format_type == NewsletterFormat.DAILY:
+            start_date = end_date - timedelta(days=1)
+            print(f"📅 Daily: Looking for articles from last 24 hours")
+        elif format_type == NewsletterFormat.WEEKLY:
+            start_date = end_date - timedelta(days=7)
+            print(f"📅 Weekly: Looking for articles from last 7 days")
+        elif format_type == NewsletterFormat.MONTHLY:
+            start_date = end_date - timedelta(days=30)
+            print(f"📅 Monthly: Looking for articles from last 30 days")
+        else:
+            start_date = end_date - timedelta(days=7)  # Default
+
+        return {
+            "start": start_date.strftime("%Y-%m-%d"),
+            "end": end_date.strftime("%Y-%m-%d"),
+        }
+
+    def _filter_by_date_range(self, articles: List[Article], config) -> List[Article]:
+        """Filter articles by date range"""
+        if not config.date_range:
+            return articles
+
+        try:
+            start_date = datetime.strptime(config.date_range["start"], "%Y-%m-%d")
+            end_date = datetime.strptime(config.date_range["end"], "%Y-%m-%d")
+
+            filtered_articles = []
+            for article in articles:
+                if article.published_at:
+                    if start_date <= article.published_at <= end_date:
+                        filtered_articles.append(article)
+                else:
+                    # If no published date, assume it's recent
+                    filtered_articles.append(article)
+
+            return filtered_articles
+        except Exception as e:
+            print(f"⚠️ Date filtering error: {e}, returning all articles")
+            return articles
+
     async def _generate_topics(self, workflow_state: WorkflowState) -> List[str]:
-        """Generate personalized search topics"""
+        """Generate personalized search topics - ENHANCED"""
         preferences = workflow_state.user_preferences
         config = workflow_state.newsletter_config
 
         topics = []
 
-        # Base topics for AI governance and responsible AI
-        base_topics = [
-            "AI governance regulations",
-            "responsible AI developments",
-            "AI compliance updates",
-            "AI ethics guidelines",
-            "AI policy updates",
-        ]
-
-        # Add user keyword-based topics
-        for keyword in preferences.keywords:
-            topics.extend(
-                [
-                    f"{keyword} AI regulations",
-                    f"{keyword} responsible AI",
-                    f"{keyword} AI governance",
-                ]
-            )
+        # 🔧 FIX: Use user keywords as primary topics
+        if preferences.keywords:
+            print(f"🎯 Using user keywords: {preferences.keywords}")
+            for keyword in preferences.keywords:
+                topics.extend(
+                    [
+                        f"{keyword} AI",
+                        f"{keyword} regulations",
+                        f"{keyword} developments",
+                        f"{keyword} news",
+                    ]
+                )
+        else:
+            # Default AI governance topics
+            base_topics = [
+                "AI governance regulations",
+                "responsible AI developments",
+                "AI compliance updates",
+                "AI ethics guidelines",
+                "AI policy updates",
+            ]
+            topics.extend(base_topics)
 
         # Add industry-specific topics
         for industry in preferences.industry_focus:
             topics.extend(
-                [f"AI applications in {industry}", f"{industry} AI compliance"]
+                [
+                    f"AI applications in {industry}",
+                    f"{industry} AI compliance",
+                    f"{industry} AI developments",
+                ]
             )
 
-        #  Add date range context for search - FIX: Use .value for enum
-        if config.date_range:
-            date_context = f" {config.format.value} updates"  # ✅ Fixed: use .value
+        # 🔧 FIX: Add proper date context for recency
+        date_context = self._get_date_context(config.format)
+        topics = [f"{topic} {date_context}" for topic in topics]
+
+        # Remove duplicates and limit
+        unique_topics = list(set(topics))[:10]  # Limit to 10 topics
+        print(f"🔍 Generated topics: {unique_topics}")
+
+        return unique_topics
+
+    def _get_date_context(self, format_type: NewsletterFormat) -> str:
+        """Get appropriate date context for search"""
+        if format_type == NewsletterFormat.DAILY:
+            return "today latest"
+        elif format_type == NewsletterFormat.WEEKLY:
+            return "this week latest"
+        elif format_type == NewsletterFormat.MONTHLY:
+            return "this month latest"
         else:
-            date_context = f" recent {config.format.value} news"  # ✅ Fixed: use .value
-
-        # Append date context to topics
-        topics = [topic + date_context for topic in (topics + base_topics)]
-
-        return list(set(topics))  # Remove duplicates
+            return "recent latest"
