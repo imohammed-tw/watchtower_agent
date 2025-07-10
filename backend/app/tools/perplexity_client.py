@@ -8,7 +8,12 @@ from datetime import datetime, timedelta
 import json
 import os
 from config import settings
-from models import Article, NewsletterConfig, UserPreferences
+from models import (
+    Article,
+    NewsletterConfig,
+    UserPreferences,
+    NewsletterFormat,
+)  # Add NewsletterFormat
 
 
 class PerplexityClient:
@@ -121,48 +126,28 @@ class PerplexityClient:
             print(f"   Error type: {type(e)}")
             return await self._mock_search_articles(topic, config, preferences)
 
-    async def _mock_search_articles(
-        self, topic: str, config: NewsletterConfig, preferences: UserPreferences
-    ) -> List[Article]:
-        """Return mock articles for testing"""
-        print(f"🔧 Using mock data for topic: '{topic}'")
-
-        mock_articles = [
-            Article(
-                title=f"AI Governance Breakthrough: {topic[:40]}",
-                url="https://techcrunch.com/mock-article-1",
-                source="TechCrunch",
-                summary=f"Recent developments in {topic} demonstrate significant progress in AI governance frameworks and responsible AI implementation across industries.",
-                topic=topic,
-                quality_score=0.8,
-            ),
-            Article(
-                title=f"New Regulatory Framework for {topic[:30]}",
-                url="https://wired.com/mock-article-2",
-                source="Wired",
-                summary=f"Analysis of emerging regulatory standards addressing {topic}, including compliance requirements and industry impact assessments.",
-                topic=topic,
-                quality_score=0.7,
-            ),
-            Article(
-                title=f"Industry Response to {topic[:35]}",
-                url="https://mit.edu/mock-article-3",
-                source="MIT Technology Review",
-                summary=f"Leading technology companies adapt their practices in response to {topic}, setting new standards for ethical AI development.",
-                topic=topic,
-                quality_score=0.9,
-            ),
-        ]
-
-        return mock_articles
+    # File: app/tools/perplexity_client.py - ENHANCED VERSION
 
     def _build_search_prompt(
         self, topic: str, config: NewsletterConfig, preferences: UserPreferences
     ) -> str:
-        """Build search prompt for Perplexity"""
+        """Build search prompt for Perplexity - ENHANCED"""
+
+        # 🔧 FIX: Build precise date range for search
         date_range = ""
         if config.date_range:
-            date_range = f" from {config.date_range.get('start')} to {config.date_range.get('end')}"
+            start_date = config.date_range.get("start")
+            end_date = config.date_range.get("end")
+            date_range = f" published between {start_date} and {end_date}"
+
+        # 🔧 FIX: Add time-specific context
+        time_context = ""
+        if config.format == NewsletterFormat.DAILY:
+            time_context = " from today or yesterday"
+        elif config.format == NewsletterFormat.WEEKLY:
+            time_context = " from the past 7 days"
+        elif config.format == NewsletterFormat.MONTHLY:
+            time_context = " from the past 30 days"
 
         preferred_sources = ""
         if preferences.preferred_sources:
@@ -170,25 +155,70 @@ class PerplexityClient:
                 f"Prioritize sources: {', '.join(preferences.preferred_sources[:5])}"
             )
 
+        # 🔧 FIX: Enhanced prompt with strict date requirements
         prompt = f"""
-        Find 10 recent news articles about: {topic}{date_range}
+        Find 10 recent news articles about: {topic}{date_range}{time_context}
         
-        Focus on: AI governance, responsible AI, AI ethics, AI regulations, compliance
+        REQUIREMENTS:
+        - Articles must be from the specified date range
+        - Focus on: AI governance, responsible AI, AI ethics, AI regulations, compliance
+        - Only include articles with publication dates
         {preferred_sources}
         
         Return ONLY a JSON list with this exact format:
         [
-          {{
+        {{
             "title": "Article Title",
             "url": "https://example.com/article",
             "source": "Source Name",
             "summary": "Brief summary",
             "published_at": "YYYY-MM-DD"
-          }}
+        }}
         ]
+        
+        IMPORTANT: Only include articles that are genuinely recent and match the date requirements.
         """
 
         return prompt
+
+    async def _mock_search_articles(
+        self, topic: str, config: NewsletterConfig, preferences: UserPreferences
+    ) -> List[Article]:
+        """Return mock articles for testing - ENHANCED with proper dates"""
+        print(f"🔧 Using mock data for topic: '{topic}'")
+
+        # 🔧 FIX: Generate mock articles with proper recent dates
+        from datetime import datetime, timedelta
+        import random
+
+        # Calculate date range based on format
+        end_date = datetime.utcnow()
+        if config.format == NewsletterFormat.DAILY:
+            start_date = end_date - timedelta(days=1)
+        elif config.format == NewsletterFormat.WEEKLY:
+            start_date = end_date - timedelta(days=7)
+        else:
+            start_date = end_date - timedelta(days=30)
+
+        mock_articles = []
+        for i in range(3):
+            # Random date within the range
+            random_days = random.randint(0, (end_date - start_date).days)
+            article_date = start_date + timedelta(days=random_days)
+
+            mock_articles.append(
+                Article(
+                    title=f"Latest {topic[:40]} Development - {article_date.strftime('%B %d')}",
+                    url=f"https://techcrunch.com/mock-article-{i+1}",
+                    source="TechCrunch",
+                    summary=f"Breaking news on {topic} published {article_date.strftime('%B %d, %Y')}. This article covers recent developments and industry impact.",
+                    topic=topic,
+                    published_at=article_date,  # 🔧 FIX: Proper date
+                    quality_score=0.8,
+                )
+            )
+
+        return mock_articles
 
     def _parse_articles_response(self, content: str, topic: str) -> List[Article]:
         """Parse articles from Perplexity response"""
