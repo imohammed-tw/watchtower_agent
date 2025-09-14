@@ -1,9 +1,8 @@
-"""
-Simple database operations using SQLite
-"""
-
+import asyncio
 import aiosqlite
 import json
+import os
+import time
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 
@@ -12,14 +11,20 @@ from models import UserPreferences, Newsletter, WorkflowState
 
 
 class Database:
-    """Simple database operations"""
+    """Simple database operations - Windows compatible"""
 
     def __init__(self):
         self.db_path = settings.database_url.replace("sqlite+aiosqlite:///", "")
+        self._lock = asyncio.Lock()
 
     async def initialize(self):
         """Initialize database tables"""
         async with aiosqlite.connect(self.db_path) as db:
+            # Enable WAL mode for better concurrency
+            await db.execute("PRAGMA journal_mode=WAL")
+            await db.execute("PRAGMA synchronous=NORMAL")
+            await db.execute("PRAGMA busy_timeout=30000")
+            
             # Users table
             await db.execute(
                 """
@@ -68,26 +73,31 @@ class Database:
 
     async def save_user_preferences(self, preferences: UserPreferences) -> bool:
         """Save user preferences"""
-        try:
-            async with aiosqlite.connect(self.db_path) as db:
-                now = datetime.utcnow().isoformat()
-                await db.execute(
-                    """
-                    INSERT OR REPLACE INTO users (id, preferences, created_at, updated_at)
-                    VALUES (?, ?, ?, ?)
-                """,
-                    (preferences.user_id, preferences.model_dump_json(), now, now),
-                )
-                await db.commit()
-                return True
-        except Exception as e:
-            print(f"Error saving user preferences: {e}")
-            return False
+        async with self._lock:
+            try:
+                async with aiosqlite.connect(self.db_path) as db:
+                    await db.execute("PRAGMA busy_timeout=30000")
+                    
+                    now = datetime.utcnow().isoformat()
+                    await db.execute(
+                        """
+                        INSERT OR REPLACE INTO users (id, preferences, created_at, updated_at)
+                        VALUES (?, ?, ?, ?)
+                    """,
+                        (preferences.user_id, preferences.model_dump_json(), now, now),
+                    )
+                    await db.commit()
+                    return True
+            except Exception as e:
+                print(f"Error saving user preferences: {e}")
+                return False
 
     async def get_user_preferences(self, user_id: str) -> Optional[UserPreferences]:
         """Get user preferences"""
         try:
             async with aiosqlite.connect(self.db_path) as db:
+                await db.execute("PRAGMA busy_timeout=30000")
+                
                 cursor = await db.execute(
                     "SELECT preferences FROM users WHERE id = ?", (user_id,)
                 )
@@ -100,33 +110,69 @@ class Database:
             return None
 
     async def save_newsletter(self, newsletter: Newsletter) -> bool:
-        """Save newsletter"""
-        try:
-            async with aiosqlite.connect(self.db_path) as db:
-                newsletter_id = (
-                    f"{newsletter.user_id}_{newsletter.generated_at.isoformat()}"
-                )
-                await db.execute(
-                    """
-                    INSERT INTO newsletters 
-                    (id, user_id, title, content, config, sections, total_articles, generated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                    (
-                        newsletter_id,
-                        newsletter.user_id,
-                        newsletter.title,
-                        newsletter.content,
-                        newsletter.config.model_dump_json(),
-                        json.dumps(newsletter.sections),
-                        newsletter.total_articles,
-                        newsletter.generated_at.isoformat(),
-                    ),
-                )
-                await db.commit()
-                return True
-        except Exception as e:
-            print(f"Error saving newsletter: {e}")
+        """Save newsletter with Windows-compatible locking"""
+        async with self._lock:
+            max_retries = 5
+            base_delay = 0.5
+            
+            for attempt in range(max_retries):
+                try:
+                    # Generate unique ID with microseconds for uniqueness
+                    timestamp = datetime.utcnow()
+                    newsletter_id = f"{newsletter.user_id}_{timestamp.strftime('%Y%m%d_%H%M%S_%f')}"
+                    
+                    print(f"💾 Saving newsletter (attempt {attempt + 1}/{max_retries}): {newsletter_id}")
+                    
+                    async with aiosqlite.connect(self.db_path) as db:
+                        await db.execute("PRAGMA busy_timeout=30000")
+                        await db.execute("PRAGMA journal_mode=WAL")
+                        await db.execute("PRAGMA synchronous=NORMAL")
+                        
+                        # Use BEGIN IMMEDIATE to get exclusive lock
+                        await db.execute("BEGIN IMMEDIATE")
+                        
+                        try:
+                            await db.execute(
+                                """
+                                INSERT INTO newsletters 
+                                (id, user_id, title, content, config, sections, total_articles, generated_at)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                                (
+                                    newsletter_id,
+                                    newsletter.user_id,
+                                    newsletter.title,
+                                    newsletter.content,
+                                    newsletter.config.model_dump_json(),
+                                    json.dumps(newsletter.sections),
+                                    newsletter.total_articles,
+                                    newsletter.generated_at.isoformat(),
+                                ),
+                            )
+                            await db.commit()
+                            print(f"✅ Newsletter saved successfully: {newsletter_id}")
+                            return True
+                            
+                        except Exception as e:
+                            await db.rollback()
+                            raise e
+                            
+                except Exception as e:
+                    print(f"❌ Error saving newsletter (attempt {attempt + 1}/{max_retries}): {e}")
+                    
+                    if "database is locked" in str(e).lower() and attempt < max_retries - 1:
+                        # Exponential backoff with jitter
+                        delay = base_delay * (2 ** attempt) + (time.time() % 0.1)
+                        print(f"⏳ Database locked, retrying in {delay:.2f} seconds...")
+                        await asyncio.sleep(delay)
+                        continue
+                    elif attempt == max_retries - 1:
+                        print(f"❌ Final attempt failed: {e}")
+                        return False
+                    else:
+                        print(f"❌ Non-lock error: {e}")
+                        return False
+            
             return False
 
     async def get_user_newsletters(
@@ -135,6 +181,8 @@ class Database:
         """Get user's recent newsletters"""
         try:
             async with aiosqlite.connect(self.db_path) as db:
+                await db.execute("PRAGMA busy_timeout=30000")
+                
                 cursor = await db.execute(
                     """
                     SELECT id, title, generated_at, total_articles

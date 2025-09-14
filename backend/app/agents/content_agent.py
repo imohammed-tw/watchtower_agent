@@ -12,6 +12,7 @@ from agents.base_agent import BaseAgent
 from models import WorkflowState, Article, NewsletterFormat
 from tools.perplexity_client import PerplexityClient
 from tools.content_processor import ContentProcessor
+from config import settings
 
 
 class ContentAgent(BaseAgent):
@@ -32,24 +33,18 @@ class ContentAgent(BaseAgent):
             self.perplexity_client.initialize(), self.content_processor.initialize()
         )
 
-    async def execute(
-        self, input_data: Any, workflow_state: WorkflowState
-    ) -> List[Article]:
-        """Execute content collection workflow"""
+    async def execute(self, input_data: Any, workflow_state: WorkflowState) -> List[Article]:
+        """Execute content collection workflow with timezone-aware dates"""
         self.last_execution = datetime.utcnow()
 
         try:
-            self.logger.info(
-                f"Starting content collection for user {workflow_state.user_id}"
-            )
+            self.logger.info(f"Starting content collection for user {workflow_state.user_id}")
 
-            # 🔧 FIX: Ensure proper date range is set
+            # 🔧 FIX: Use timezone-aware date range calculation
             config = workflow_state.newsletter_config
             if not config.date_range:
-                config.date_range = self._calculate_date_range(config.format)
-                print(
-                    f"🔧 Setting date range for {config.format.value}: {config.date_range}"
-                )
+                config.date_range = self._calculate_date_range_with_timezone(config.format)
+                print(f"🔧 Set timezone-aware date range for {config.format.value}: {config.date_range}")
 
             # 1. Generate personalized topics
             topics = await self._generate_topics(workflow_state)
@@ -91,26 +86,41 @@ class ContentAgent(BaseAgent):
             self.logger.error(f"Content collection failed: {e}")
             raise
 
-    def _calculate_date_range(self, format_type: NewsletterFormat) -> dict:
-        """Calculate proper date range based on format"""
-        end_date = datetime.utcnow()
+    def _calculate_date_range_with_timezone(self, format_type: NewsletterFormat) -> dict:
+        """Calculate proper date range with timezone awareness - UPDATED"""
+        from utils.date_manager import DateManager
+        
+        date_manager = DateManager()
+        date_range = date_manager.get_search_date_range(format_type)
+        
+        # Also set the timezone-aware range in the config
+        print(f"🔧 ContentAgent: Using timezone-aware date range")
+        print(f"   Format: {format_type.value}")
+        print(f"   Range: {date_range['start']} to {date_range['end']}")
+        print(f"   Timezone: {settings.timezone}")
+        
+        return date_range
 
-        if format_type == NewsletterFormat.DAILY:
-            start_date = end_date - timedelta(days=1)
-            print(f"📅 Daily: Looking for articles from last 24 hours")
-        elif format_type == NewsletterFormat.WEEKLY:
-            start_date = end_date - timedelta(days=7)
-            print(f"📅 Weekly: Looking for articles from last 7 days")
-        elif format_type == NewsletterFormat.MONTHLY:
-            start_date = end_date - timedelta(days=30)
-            print(f"📅 Monthly: Looking for articles from last 30 days")
-        else:
-            start_date = end_date - timedelta(days=7)  # Default
+    # def _calculate_date_range(self, format_type: NewsletterFormat) -> dict:
+    #     """Calculate proper date range based on format"""
+    #     end_date = datetime.utcnow()
 
-        return {
-            "start": start_date.strftime("%Y-%m-%d"),
-            "end": end_date.strftime("%Y-%m-%d"),
-        }
+    #     if format_type == NewsletterFormat.DAILY:
+    #         start_date = end_date - timedelta(days=1)
+    #         print(f"📅 Daily: Looking for articles from last 24 hours")
+    #     elif format_type == NewsletterFormat.WEEKLY:
+    #         start_date = end_date - timedelta(days=7)
+    #         print(f"📅 Weekly: Looking for articles from last 7 days")
+    #     elif format_type == NewsletterFormat.MONTHLY:
+    #         start_date = end_date - timedelta(days=30)
+    #         print(f"📅 Monthly: Looking for articles from last 30 days")
+    #     else:
+    #         start_date = end_date - timedelta(days=7)  # Default
+
+    #     return {
+    #         "start": start_date.strftime("%Y-%m-%d"),
+    #         "end": end_date.strftime("%Y-%m-%d"),
+    #     }
 
     def _filter_by_date_range(self, articles: List[Article], config) -> List[Article]:
         """Filter articles by date range"""
@@ -142,38 +152,61 @@ class ContentAgent(BaseAgent):
 
         topics = []
 
-        # 🔧 FIX: Use user keywords as primary topics
+        # 🔧 FIX: Create diverse topics that map to different sections
         if preferences.keywords:
             print(f"🎯 Using user keywords: {preferences.keywords}")
             for keyword in preferences.keywords:
-                topics.extend(
-                    [
-                        f"{keyword} AI",
-                        f"{keyword} regulations",
-                        f"{keyword} developments",
-                        f"{keyword} news",
-                    ]
-                )
+                topics.extend([
+                    f"{keyword} breakthrough technology",     # -> Technical Breakthroughs
+                    f"{keyword} regulations compliance",      # -> Compliance & Risk Watch
+                    f"{keyword} industry applications",       # -> Industry Applications
+                    f"{keyword} market trends",              # -> Executive Highlights
+                    f"{keyword} future predictions",         # -> Forward Intelligence
+                ])
         else:
-            # Default AI governance topics
-            base_topics = [
+            # 🔧 FIX: More diverse base topics for different sections
+            diverse_topics = [
+                # Technical Breakthroughs
+                "AI model architecture innovations",
+                "machine learning breakthrough algorithms", 
+                "AI hardware accelerators",
+                "neural network advances",
+                
+                # Compliance & Risk Watch
                 "AI governance regulations",
-                "responsible AI developments",
-                "AI compliance updates",
+                "AI compliance frameworks",
                 "AI ethics guidelines",
                 "AI policy updates",
+                
+                # Industry Applications
+                "AI healthcare applications",
+                "AI finance solutions",
+                "AI manufacturing automation",
+                "AI retail innovations",
+                
+                # Executive Highlights
+                "AI market analysis",
+                "AI investment trends",
+                "AI startup funding",
+                "AI enterprise adoption",
+                
+                # Forward Intelligence
+                "AI future predictions",
+                "AI research directions",
+                "emerging AI technologies",
+                "AI roadmap 2025",
             ]
-            topics.extend(base_topics)
+            topics.extend(diverse_topics)
 
         # Add industry-specific topics
         for industry in preferences.industry_focus:
-            topics.extend(
-                [
-                    f"AI applications in {industry}",
-                    f"{industry} AI compliance",
-                    f"{industry} AI developments",
-                ]
-            )
+            topics.extend([
+                f"AI technical advances in {industry}",      # -> Technical Breakthroughs
+                f"AI applications in {industry}",           # -> Industry Applications
+                f"AI compliance in {industry}",             # -> Compliance & Risk Watch
+                f"{industry} AI market trends",             # -> Executive Highlights
+                f"future AI in {industry}",                 # -> Forward Intelligence
+            ])
 
         # 🔧 FIX: Add proper date context for recency
         date_context = self._get_date_context(config.format)

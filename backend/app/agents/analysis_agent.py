@@ -107,23 +107,31 @@ class AnalysisAgent(BaseAgent):
     async def _process_batch(
         self, articles: List[Article], workflow_state: WorkflowState
     ) -> List[AnalyzedArticle]:
-        """Process a batch of articles with debugging"""
+        """Process a batch of articles with enhanced section assignment debugging"""
         analyzed_articles = []
+
+        # Get target sections for better assignment
+        target_sections = workflow_state.newsletter_config.sections
+        print(f"🎯 Target sections for assignment: {target_sections}")
 
         for i, article in enumerate(articles, 1):
             try:
                 print(f"   Analyzing {i}/{len(articles)}: {article.title[:50]}...")
 
-                # Analyze article using OpenAI
+                # Analyze article using OpenAI with target sections
                 analysis_result = await self.openai_client.analyze_article(
                     article,
                     workflow_state.user_preferences,
-                    workflow_state.newsletter_config.sections,
+                    target_sections,  # Pass actual target sections
                 )
 
-                print(
-                    f"   ✅ Analysis complete: relevance={analysis_result.get('relevance_score', 0):.2f}, section={analysis_result.get('best_section', 'Unknown')}"
-                )
+                # Ensure assigned section is valid
+                assigned_section = analysis_result.get("best_section", target_sections[0])
+                if assigned_section not in target_sections:
+                    print(f"⚠️ Invalid section '{assigned_section}' assigned, using '{target_sections[0]}'")
+                    assigned_section = target_sections[0]
+
+                print(f"   ✅ Analysis complete: relevance={analysis_result.get('relevance_score', 0):.2f}, section={assigned_section}")
 
                 # Calculate personalization score
                 personal_score = await self._calculate_personalization_score(
@@ -136,7 +144,7 @@ class AnalysisAgent(BaseAgent):
                     sentiment=analysis_result["sentiment"],
                     impact_score=analysis_result["impact_score"],
                     urgency_score=analysis_result["urgency_score"],
-                    assigned_section=analysis_result["best_section"],
+                    assigned_section=assigned_section,  # Use validated section
                     personalization_score=personal_score,
                 )
 
@@ -144,7 +152,28 @@ class AnalysisAgent(BaseAgent):
 
             except Exception as e:
                 print(f"   ❌ Failed to analyze article '{article.title[:30]}...': {e}")
+                
+                # Create fallback analyzed article instead of skipping
+                fallback_article = AnalyzedArticle(
+                    article=article,
+                    relevance_score=0.6,  # Default relevance
+                    sentiment="neutral",
+                    impact_score=5,
+                    urgency_score=5,
+                    assigned_section=target_sections[0] if target_sections else "General",
+                    personalization_score=0.5,
+                )
+                analyzed_articles.append(fallback_article)
+                print(f"   🔧 Created fallback analysis for article")
                 continue
+
+        # Verify section assignments
+        assigned_sections = [a.assigned_section for a in analyzed_articles]
+        print(f"📊 Section assignment summary:")
+        from collections import Counter
+        section_counts = Counter(assigned_sections)
+        for section, count in section_counts.items():
+            print(f"   {section}: {count} articles")
 
         return analyzed_articles
 

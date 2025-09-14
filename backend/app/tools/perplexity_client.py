@@ -15,7 +15,6 @@ from models import (
     NewsletterFormat,
 )  # Add NewsletterFormat
 
-
 class PerplexityClient:
     """Client for Perplexity API"""
 
@@ -27,12 +26,6 @@ class PerplexityClient:
         print(
             f"🔍 DEBUG: API key length: {len(settings.perplexity_api_key) if settings.perplexity_api_key else 0}"
         )
-        print(f"🔍 DEBUG: API key type: {type(settings.perplexity_api_key)}")
-
-        # Check environment directly
-        env_key = os.getenv("PERPLEXITY_API_KEY")
-        print(f"🔍 DEBUG: Direct from env: '{env_key}'")
-        print(f"🔍 DEBUG: Direct env length: {len(env_key) if env_key else 0}")
 
         self.api_key = settings.perplexity_api_key
         self.base_url = "https://api.perplexity.ai/chat/completions"
@@ -161,8 +154,9 @@ class PerplexityClient:
         
         REQUIREMENTS:
         - Articles must be from the specified date range
-        - Focus on: AI governance, responsible AI, AI ethics, AI regulations, compliance
+        - Focus on: AI governance, Agentic AI, responsible AI, AI ethics, AI regulations, compliance
         - Only include articles with publication dates
+        - Articles must be fetched from user's preferred sources
         {preferred_sources}
         
         Return ONLY a JSON list with this exact format:
