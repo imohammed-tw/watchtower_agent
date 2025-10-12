@@ -734,12 +734,158 @@ async def export_latest_newsletter(user_id: str, format: str = "html"):
 
     except HTTPException:
         raise
+
+
+@router.get("/export/by-id/{newsletter_id}")
+async def export_newsletter_by_id(newsletter_id: str, format: str = "html"):
+    """Export a specific newsletter by id in html or markdown."""
+    try:
+        db_path = settings.database_url.replace("sqlite+aiosqlite:///", "")
+        if not os.path.exists(db_path):
+            raise HTTPException(status_code=500, detail=f"Database file not found: {db_path}")
+
+        async with aiosqlite.connect(db_path) as database:
+            cursor = await database.execute(
+                """
+                SELECT id, user_id, title, content, config, sections, total_articles, generated_at
+                FROM newsletters 
+                WHERE id = ?
+                """,
+                (newsletter_id,)
+            )
+            row = await cursor.fetchone()
+
+            if not row:
+                raise HTTPException(status_code=404, detail="Newsletter not found")
+
+            id_db, user_id_db, title, content, config_json, sections_json, total_articles, generated_at = row
+
+            if not content or len(content) < 50:
+                raise HTTPException(status_code=500, detail="Newsletter content is too short or empty")
+
+            try:
+                import json as _json
+                from datetime import datetime as _dt
+                config_data = _json.loads(config_json) if config_json else {}
+                sections_data = _json.loads(sections_json) if sections_json else []
+            except Exception:
+                config_data, sections_data = {}, []
+
+        from models import Newsletter as _Newsletter
+        newsletter = _Newsletter(
+            user_id=user_id_db,
+            title=title,
+            content=content,
+            config=config_data,
+            total_articles=total_articles,
+            sections=sections_data,
+            generated_at=_dt.fromisoformat(generated_at) if isinstance(generated_at, str) else generated_at,
+        )
+
+        exporter = NewsletterExporter()
+        if format.lower() == "html":
+            filepath = exporter.export_to_html(newsletter)
+            media_type = "text/html"
+        elif format.lower() in ["markdown", "md"]:
+            filepath = exporter.export_to_markdown(newsletter)
+            media_type = "text/markdown"
+        else:
+            raise HTTPException(status_code=400, detail="Unsupported format. Use 'html' or 'markdown'")
+
+        if not os.path.exists(filepath):
+            raise HTTPException(status_code=500, detail="Export file creation failed")
+
+        filename = os.path.basename(filepath)
+        return FileResponse(
+            filepath,
+            filename=filename,
+            media_type=media_type,
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Export by id failed: {str(e)}")
     except Exception as e:
         print(f"❌ Export failed: {e}")
         import traceback
         print(f"Full traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"Export failed: {str(e)}")
 
+
+@router.get("/get/{newsletter_id}")
+async def get_newsletter_by_id(newsletter_id: str):
+    """Return a newsletter by id as JSON for on-page viewing (no file download)."""
+    try:
+        db_path = settings.database_url.replace("sqlite+aiosqlite:///", "")
+        if not os.path.exists(db_path):
+            raise HTTPException(status_code=500, detail=f"Database file not found: {db_path}")
+
+        async with aiosqlite.connect(db_path) as database:
+            cursor = await database.execute(
+                """
+                SELECT id, user_id, title, content, config, sections, total_articles, generated_at, format
+                FROM newsletters 
+                WHERE id = ?
+                """,
+                (newsletter_id,)
+            )
+            row = await cursor.fetchone()
+
+            if not row:
+                raise HTTPException(status_code=404, detail="Newsletter not found")
+
+            id_db, user_id_db, title, content, config_json, sections_json, total_articles, generated_at, fmt = row
+            try:
+                config_data = json.loads(config_json) if config_json else {}
+                sections_data = json.loads(sections_json) if sections_json else {}
+            except Exception:
+                config_data, sections_data = {}, {}
+
+        from models import Newsletter, NewsletterConfig, NewsletterFormat, TemplateType
+        try:
+            newsletter_format = NewsletterFormat((fmt or config_data.get('format') or 'monthly'))
+            template_type = TemplateType(config_data.get('template', 'professional'))
+            cfg = NewsletterConfig(
+                format=newsletter_format,
+                sections=config_data.get('sections', list(sections_data.keys()) if isinstance(sections_data, dict) else []),
+                template=template_type,
+                max_articles=config_data.get('max_articles', 20),
+                max_total_words=config_data.get('max_total_words', 2000),
+                max_section_words=config_data.get('max_section_words', 400),
+                max_article_summary_words=config_data.get('max_article_summary_words', 80),
+                date_range=config_data.get('date_range', {}),
+            )
+        except Exception:
+            cfg = NewsletterConfig()
+
+        newsletter = Newsletter(
+            user_id=user_id_db,
+            title=title,
+            content=content,
+            config=cfg,
+            total_articles=total_articles,
+            sections=sections_data if isinstance(sections_data, dict) else {},
+            generated_at=datetime.fromisoformat(generated_at) if isinstance(generated_at, str) else generated_at,
+        )
+
+        return {
+            "id": newsletter_id,
+            "title": newsletter.title,
+            "content": newsletter.content,
+            "summary": newsletter.summary_stats,
+            "generated_at": newsletter.generated_at.isoformat(),
+            "sections": newsletter.sections,
+            "config": {
+                "format": newsletter.config.format.value,
+                "template": newsletter.config.template.value,
+                "date_range": newsletter.config.date_range,
+            }
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Get newsletter failed: {str(e)}")
 
 @router.get("/history/{user_id}")
 async def get_newsletter_history(user_id: str, limit: int = 10):
@@ -755,13 +901,22 @@ async def get_newsletter_history(user_id: str, limit: int = 10):
                 db_path = settings.database_url.replace("sqlite+aiosqlite:///", "")
                 async with aiosqlite.connect(db_path) as database:
                     cursor = await database.execute(
-                        "SELECT content FROM newsletters WHERE id = ?",
+                        "SELECT content, format, config FROM newsletters WHERE id = ?",
                         (newsletter['id'],)
                     )
                     content_row = await cursor.fetchone()
                     if content_row:
                         word_count = len(content_row[0].split())
                         newsletter['word_count'] = word_count
+                        # Prefer explicit format column; fallback to config
+                        if content_row[1]:
+                            newsletter['format'] = content_row[1]
+                        else:
+                            try:
+                                cfg = json.loads(content_row[2] or '{}')
+                                newsletter['format'] = cfg.get('format', 'unknown')
+                            except Exception:
+                                newsletter['format'] = 'unknown'
             
             enhanced_newsletters.append(newsletter)
         

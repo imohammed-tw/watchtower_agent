@@ -43,6 +43,7 @@ class Database:
                 CREATE TABLE IF NOT EXISTS newsletters (
                     id TEXT PRIMARY KEY,
                     user_id TEXT,
+                    format TEXT,
                     title TEXT,
                     content TEXT,
                     config TEXT,
@@ -53,6 +54,12 @@ class Database:
                 )
             """
             )
+
+            # Ensure older DBs get the 'format' column
+            try:
+                await db.execute("ALTER TABLE newsletters ADD COLUMN format TEXT")
+            except Exception:
+                pass
 
             # Workflows table
             await db.execute(
@@ -133,26 +140,27 @@ class Database:
                         
                         try:
                             await db.execute(
-                                """
-                                INSERT INTO newsletters 
-                                (id, user_id, title, content, config, sections, total_articles, generated_at)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                            """,
-                                (
-                                    newsletter_id,
-                                    newsletter.user_id,
-                                    newsletter.title,
-                                    newsletter.content,
-                                    newsletter.config.model_dump_json(),
-                                    json.dumps(newsletter.sections),
-                                    newsletter.total_articles,
-                                    newsletter.generated_at.isoformat(),
-                                ),
-                            )
+                                    """
+                                    INSERT INTO newsletters 
+                                    (id, user_id, format, title, content, config, sections, total_articles, generated_at)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                """,
+                                    (
+                                        newsletter_id,
+                                        newsletter.user_id,
+                                    newsletter.config.format.value,
+                                        newsletter.title,
+                                        newsletter.content,
+                                        newsletter.config.model_dump_json(),
+                                        json.dumps(newsletter.sections),
+                                        newsletter.total_articles,
+                                        newsletter.generated_at.isoformat(),
+                                    ),
+                                )
                             await db.commit()
                             print(f"✅ Newsletter saved successfully: {newsletter_id}")
                             return True
-                            
+                                
                         except Exception as e:
                             await db.rollback()
                             raise e
@@ -185,7 +193,7 @@ class Database:
                 
                 cursor = await db.execute(
                     """
-                    SELECT id, title, generated_at, total_articles
+                    SELECT id, title, generated_at, total_articles, COALESCE(format, '') as format
                     FROM newsletters 
                     WHERE user_id = ?
                     ORDER BY generated_at DESC
@@ -201,6 +209,7 @@ class Database:
                         "title": row[1],
                         "generated_at": row[2],
                         "total_articles": row[3],
+                        "format": row[4] if row[4] else None,
                     }
                     for row in rows
                 ]

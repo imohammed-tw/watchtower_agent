@@ -112,6 +112,14 @@ class Orchestrator:
             workflow_state.status = "collecting"
             print("📰 Phase 1: Enhanced Content Collection")
             articles = await self.content_agent.execute(None, workflow_state)
+            # Enforce max_articles early to save tokens/time downstream
+            try:
+                max_articles = int(newsletter_config.max_articles) if newsletter_config.max_articles else None
+            except Exception:
+                max_articles = None
+            if max_articles and len(articles) > max_articles:
+                articles = articles[:max_articles]
+                print(f"✂️ Trimmed articles to max_articles={max_articles}")
             workflow_state.collected_articles = articles
             print(f"📊 Content collection: {len(articles)} articles found")
 

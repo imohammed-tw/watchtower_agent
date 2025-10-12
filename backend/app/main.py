@@ -12,6 +12,7 @@ from api.newsletter import router as newsletter_router
 from api.users import router as users_router
 from api.export import router as export_router
 from api.dashboard import router as dashboard_router  # NEW: Dashboard API
+from api.auth import router as auth_router  # NEW: Authentication API
 
 import os
 import atexit
@@ -94,6 +95,9 @@ def create_app() -> FastAPI:
     
     # NEW: Include dashboard router for frontend metrics and alerts
     app.include_router(dashboard_router, prefix="/api/v1/dashboard", tags=["Dashboard"])
+    
+    # NEW: Include auth router for authentication
+    app.include_router(auth_router, prefix="/api/v1/auth", tags=["Authentication"])
 
     @app.get("/")
     async def root():
